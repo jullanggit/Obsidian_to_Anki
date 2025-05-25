@@ -2,7 +2,7 @@ import { AnkiConnectNote } from "./interfaces/note-interface";
 import { basename, extname } from "path";
 import { Converter } from "showdown";
 import { CachedMetadata } from "obsidian";
-import { spawn } from "child_process";
+import { spawnSync } from "child_process";
 import * as c from "./constants";
 
 import showdownHighlight from "showdown-highlight";
@@ -100,101 +100,64 @@ export class FormatConverter {
 
   obsidian_to_anki_math(note_text: string): string {
     return note_text
-      .replace(c.OBS_DISPLAY_MATH_REGEXP, (match: string, inner: string) => {
-        this.check_typst("$ " + inner + " $")
-          .then((result) => {
-            if (result.is_typst) {
-              this.to_latex(inner)
-                .then((result) => {
-                  return result.latex;
-                })
-                .catch((err) => {
-                  console.log("Error converting typst to latex: " + err);
-                });
-            }
-          })
-          .catch((err) =>
-            console.log("Error checking if math text is typst: " + err),
-          );
+      .replace(c.OBS_DISPLAY_MATH_REGEXP, (_match: string, inner: string) => {
+        const typst = `$ ${inner} $`;
+        try {
+          if (this.check_typst(typst)) {
+            return this.to_latex(typst);
+          }
+        } catch (err) {
+          console.error("Error:", err);
+        }
 
         return `\\[${inner}\\]`;
       })
-      .replace(c.OBS_INLINE_MATH_REGEXP, (match: string, inner: string) => {
-        this.check_typst("$" + inner + "$")
-          .then((result) => {
-            if (result.is_typst) {
-              this.to_latex(inner)
-                .then((result) => {
-                  return result.latex;
-                })
-                .catch((err) => {
-                  console.log("Error converting typst to latex: " + err);
-                });
-            }
-          })
-          .catch((err) =>
-            console.log("Error checking if math text is typst: " + err),
-          );
+      .replace(c.OBS_INLINE_MATH_REGEXP, (_match: string, inner: string) => {
+        const typst = `$${inner}$`;
+        try {
+          if (this.check_typst(typst)) {
+            return this.to_latex(typst);
+          }
+        } catch (err) {
+          console.error("Error:", err);
+        }
 
         return `\\(${inner}\\)`;
       });
   }
-  async check_typst(math_text: string): Promise<{ is_typst: boolean }> {
-    return new Promise((resolve, reject) => {
-      // spawn a typst compiler process, pipe stdin, ignore stdout & stderr
-      const child = spawn("typst", ["c", "-", "-f", "pdf", "/dev/null"], {
-        stdio: ["pipe", "ignore", "ignore"],
-      });
-
-      // write math text to stdin
-      child.stdin.write(math_text);
-      child.stdin.end();
-
-      // reject on error
-      child.on("error", (err) => {
-        reject(err);
-      });
-
-      // return true if process exited successfully, false otherwise
-      child.on("close", (code) => {
-        resolve({ is_typst: code == 0 });
-      });
+  check_typst(math_text: string): boolean {
+    // spawn a typst compiler process, pipe stdin, ignore stdout & stderr
+    const child = spawnSync("typst", ["c", "-", "-f", "pdf", "/dev/null"], {
+      input: math_text,
+      stdio: ["pipe", "ignore", "ignore"],
+      encoding: "utf-8",
     });
+
+    if (child.error) {
+      throw child.error;
+    }
+
+    return child.status == 0;
   }
-  async to_latex(typst: string): Promise<{ latex: string }> {
-    return new Promise((resolve, reject) => {
-      // spawn a typst process, pipe stdin & stdout, ignore stderr
-      const child = spawn(
-        "pandoc",
-        ["-f", "typst", "-t", "latex", "/dev/null"],
-        {
-          stdio: ["pipe", "pipe", "ignore"],
-        },
-      );
-
-      let latex = "";
-
-      // write math text to stdin
-      child.stdin.write(typst);
-      child.stdin.end();
-
-      child.stdout.on("data", (chunk) => {
-        latex += chunk.toString();
-      });
-
-      // reject on error
-      child.on("error", (err) => {
-        reject(err);
-      });
-
-      // return true if process exited successfully, false otherwise
-      child.on("close", (code) => {
-        if (code != 0) {
-          reject("error");
-        }
-        resolve({ latex });
-      });
+  to_latex(typst: string): string {
+    // spawn a typst process, pipe stdin, stdout and stderr
+    const child = spawnSync("pandoc", ["-f", "typst", "-t", "latex"], {
+      input: typst,
+      stdio: ["pipe", "pipe", "pipe"],
+      encoding: "utf-8",
     });
+
+    // spawn error
+    if (child.error) {
+      throw child.error;
+    }
+    // pandoc error
+    if (child.status !== 0) {
+      const stderr = child.stderr || `exit code ${child.status}`;
+      throw new Error(`Pandoc conversion failed: ${stderr}`);
+    }
+
+    return child.stdout;
   }
 
   cloze_repl(_1: string, match_id: string, match_content: string): string {
